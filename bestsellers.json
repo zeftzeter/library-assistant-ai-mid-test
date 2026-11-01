@@ -1,0 +1,20 @@
+{
+  "source": "YES24 국내도서 종합 베스트",
+  "source_url": "https://www.yes24.com/Product/Category/BestSeller?categoryNumber=001&pageNumber=1&pageSize=24",
+  "period_start": "2026-10-12",
+  "period_end": "2026-10-18",
+  "checked_on": "2026-10-19",
+  "scope": "YES24의 최근 7일 판매·주문 기준. 대한민국 전체 서점의 통합 순위가 아님.",
+  "items": [
+    {"rank": 1, "title": "빨강의 자서전", "author": "앤 카슨"},
+    {"rank": 2, "title": "가호", "author": "무라카미 하루키"},
+    {"rank": 3, "title": "트렌드 코리아 2027", "author": "김난도 외"},
+    {"rank": 4, "title": "원피스 ONE PIECE 115", "author": "오다 에이이치로"},
+    {"rank": 5, "title": "쇼펜하우어 인생수업 (30만 부 기념 개정증보판)", "author": "아르투어 쇼펜하우어"},
+    {"rank": 6, "title": "싯다르타", "author": "헤르만 헤세"},
+    {"rank": 7, "title": "모순", "author": "양귀자"},
+    {"rank": 8, "title": "세네카, 오늘을 빼앗기고 있는 당신에게", "author": "루키우스 안나이우스 세네카"},
+    {"rank": 9, "title": "퍼플필", "author": "진쏠미"},
+    {"rank": 10, "title": "가짜 돈 진짜 부", "author": "박종훈"}
+  ]
+}
