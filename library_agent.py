@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import uuid
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from pathlib import Path
 from auth import login
@@ -77,13 +78,54 @@ def result(text, **data):
 def normalize(text):
     return re.sub(r"\s+", "", text).casefold()
 
+def preference_save_request(text):
+    return any(w in normalize(text) for w in ["저장해", "저장하세요", "저장하자", "저장부탁", "기억해", "기억하세요"])
+
+def catalog_request(text):
+    compact = normalize(text)
+    return compact in {"*", "전체", "전체목록"} or (
+        any(w in compact for w in ["소장", "보유", "도서목록", "책목록", "모든책", "전체도서", "전체책"])
+        and any(w in compact for w in ["목록", "뭐", "어떤", "모든", "전체", "보여", "알려"]))
+
+def search_request(text):
+    # 등록된 제목은 '기억' 같은 일반 의도 키워드보다 먼저 판별한다.
+    compact = normalize(text)
+    return catalog_request(text) or any(normalize(b["title"]) in compact for b in books) or (
+        not any(w in text for w in ["선호", "취향", "대출", "반납", "빌린", "베스트", "인기", "판매 순위"])
+        and (any(w in text for w in ["찾", "검색", "저자", "작가"]) or
+             any(len(compact) >= 3 and compact in normalize(b["title"]) for b in books)))
+
+def resolve_search(text, messages):
+    """대명사 질문은 현재 턴 이전의 마지막 성공 검색으로만 해석한다."""
+    if not any(w in normalize(text) for w in ["그책", "이책", "해당책", "그도서", "그저자", "그작가"]):
+        return text
+    previous = messages[:-len(current_turn(messages))]
+    for msg in reversed(previous):
+        if isinstance(msg, ToolMessage) and msg.name == "search_books":
+            rows = json.loads(msg.content).get("books", [])
+            if len(rows) == 1:
+                return rows[0]["title"]
+            if len(rows) > 1:
+                return None
+    return None
+
 @tool
 def search_books(query: str) -> str:
-    """제목 또는 저자로 도서를 검색한다. 부분 제목 가능. 내용·장르는 제공하지 않는다."""
+    """제목 또는 저자로 검색한다. 부분 제목 가능. 전체 소장 목록은 query='*'. 내용·장르는 제공하지 않는다."""
     print(f"[도구] search_books: {query}", flush=True)
-    key = normalize(query)
-    found = [b for b in books if key and (key in normalize(b["title"]) or key in normalize(b["author"]) or key == normalize(b["title"] + b["author"]))]
+    key = normalize(re.sub(r'''["'“”‘’「」『』]''', '', query))
+    # 자연어 요청에 등록된 제목/저자가 포함되어도 동일한 자료를 찾는다.
+    found = books[:] if catalog_request(query) else [b for b in books if key and (
+        key in normalize(b["title"]) or key in normalize(b["author"])
+        or normalize(b["title"]) in key or normalize(b["author"]) in key)]
     text = "\n".join(f"• {b['title']} / 저자: {b['author']}" for b in found)
+    if not found:
+        # 비슷한 제목을 실제 일치 결과로 확정하지 않고 확인 후보로 구분한다.
+        cleaned = re.sub(r"(찾아줘|찾아주세요|검색해줘|알려줘|이라는책|이란책)", "", key)
+        scored = [(SequenceMatcher(None, cleaned, normalize(b['title'])).ratio(), b) for b in books]
+        candidates = [b for score, b in sorted(scored, key=lambda pair: pair[0], reverse=True)[:3] if score >= .6]
+        if candidates:
+            return result("정확히 일치하는 도서는 없습니다. 혹시 다음 책을 찾으셨나요?\n" + "\n".join(f"• {b['title']} / 저자: {b['author']}" for b in candidates), books=[], suggestions=candidates)
     return result(text or f"'{query}'에 해당하는 도서를 찾을 수 없습니다.", books=found)
 
 @tool
@@ -188,6 +230,19 @@ def library_guardrail(state, runtime):
     if category:
         print(f"[입력 가드레일] {category}", flush=True)
         return {"messages": [AIMessage(content=BLOCK_MESSAGES[category], additional_kwargs={"guardrail": True, "category": category})], "jump_to": "end"}
+    question = str(state["messages"][-1].content)
+    if search_request(question):
+        query = resolve_search(question, state["messages"])
+        if query is None:
+            return {"messages": [AIMessage(content="어떤 책을 말씀하시나요? 도서 제목을 알려주세요.", additional_kwargs={"guardrail": True})], "jump_to": "end"}
+        query = "*" if catalog_request(query) else query
+        searched = search_books.invoke({"query": query})
+        call_id = uuid.uuid4().hex
+        # 실제 검색을 먼저 수행하므로 모델이 생략하거나 검색어를 훼손할 수 없다.
+        return {"messages": [
+            AIMessage(content="", tool_calls=[{"name": "search_books", "args": {"query": query}, "id": call_id}]),
+            ToolMessage(content=searched, name="search_books", tool_call_id=call_id),
+        ]}
     return None
 
 @wrap_model_call
@@ -217,10 +272,12 @@ def enrich_context(request, handler):
     turn = current_turn(request.messages)
     question = str(turn[0].content)
     completed = {m.name for m in turn if isinstance(m, ToolMessage)}
-    if any(w in question.casefold() for w in ["베스트", "인기 도서", "인기도서", "인기 있는 책", "판매 순위", "판매순위", "bestseller"]):
+    if search_request(question):
+        allowed = {"search_books"}
+    elif any(w in question.casefold() for w in ["베스트", "인기 도서", "인기도서", "인기 있는 책", "판매 순위", "판매순위", "bestseller"]):
         allowed = {"get_bestsellers"}
     elif any(w in question for w in ["선호", "취향", "기억", "저장"]):
-        allowed = {"save_preference"} if any(w in question for w in ["저장", "기억해"]) else {"get_preference"}
+        allowed = {"save_preference"} if preference_save_request(question) else {"get_preference"}
     elif any(w in question for w in ["대출", "반납", "빌린"]):
         allowed = {"get_my_loans"}
     else:
@@ -264,7 +321,19 @@ def build_agent():
             return None
         turn = current_turn(state["messages"])
         question = str(turn[0].content)
-        if any(w in question for w in ["선호", "취향"]) and any(w in question for w in ["저장", "기억해"]):
+        if search_request(question) and not any(isinstance(m, ToolMessage) and m.name == "search_books" for m in turn):
+            # 프롬프트의 MUST만으로는 로컬 모델의 도구 호출을 보장하지 못한다.
+            # 누락 시 실제 도구를 실행하고 호출/결과를 대화 State에도 남긴다.
+            query = "*" if catalog_request(question) else question
+            searched = search_books.invoke({"query": query})
+            call_id = uuid.uuid4().hex
+            print("[최종 검수] 검색 호출 누락 보완: 도구 결과로 응답", flush=True)
+            return {"messages": [
+                AIMessage(id=last.id, content="", tool_calls=[{"name": "search_books", "args": {"query": query}, "id": call_id}]),
+                ToolMessage(content=searched, name="search_books", tool_call_id=call_id),
+                AIMessage(content=json.loads(searched)["text"]),
+            ]}
+        if any(w in question for w in ["선호", "취향"]) and preference_save_request(question):
             if not any(isinstance(m, ToolMessage) and m.name == "save_preference" for m in turn):
                 # 명시적 저장 요청인데 작은 모델이 호출을 누락한 경우.
                 # 사용자가 실제로 쓴 선호 문장을 저장하며 모델의 추측은 저장하지 않는다.
@@ -292,6 +361,10 @@ def build_agent():
         if verdict != "SAFE" or unsupported_detail(last.content):
             sources = evidence or history[-4:]
             reviewed = ("확인되지 않은 내용은 안내할 수 없습니다. 도구로 확인한 정보만 안내합니다.\n" + "\n".join(dict.fromkeys(sources))) if sources else "확인된 정보가 부족합니다. 도서 제목·저자 또는 본인 대출 정보에 대해 다시 요청해 주세요."
+        # 검색 성공/실패가 모델의 문장 생성으로 뒤집히지 않도록 실제 결과를 사용한다.
+        search_results = [m for m in turn if isinstance(m, ToolMessage) and m.name in {"search_books", "get_my_loans"}]
+        if search_results:
+            reviewed = json.loads(search_results[-1].content)["text"]
         # 선호 저장/조회 결과는 확인된 도구 문구로 안내해 저장 여부가 뒤집히지 않게 한다.
         preference_results = [m for m in turn if isinstance(m, ToolMessage) and m.name in {"get_preference", "save_preference"}]
         if preference_results:

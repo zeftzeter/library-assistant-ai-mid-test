@@ -1,11 +1,4 @@
-.env
-.env.*
-!.env.example
-.venv/
-venv/
 __pycache__/
-*.py[cod]
 data/
+.env
 *.log
-.DS_Store
-Thumbs.db

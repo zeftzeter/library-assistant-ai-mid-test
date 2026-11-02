@@ -19,7 +19,7 @@ def ensure_accounts(root: Path):
         accounts = {}
         for index, uid in enumerate(ACCOUNT_IDS, 1):
             salt = secrets.token_hex(16)
-            accounts[uid] = {"salt": salt, "password_hash": password_hash(f"Mitzu{1000+index}!", salt)}
+            accounts[uid] = {"salt": salt, "password_hash": password_hash("111", salt)}
         # 이미 있는 계정 파일은 덮어쓰지 않는다.
         with path.open("x", encoding="utf-8") as file:
             json.dump(accounts, file, ensure_ascii=False, indent=2)
